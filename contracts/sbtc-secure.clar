@@ -349,3 +349,81 @@
     (ok amount)
   )
 )
+
+(define-public (borrow (amount uint))
+  (let (
+    (sender tx-sender)
+    (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: sender })))
+    (user-collateral-amount (get amount current-collateral))
+    (loan (default-to { 
+              collateral-amount: u0, 
+              borrowed-amount: u0, 
+              interest-accumulated: u0,
+              last-update-block: block-height,
+              liquidation-price: u0,
+              active: false
+            } 
+            (map-get? loans { borrower: sender })))
+    (has-active-loan (get active loan))
+    (borrowed-amount (get borrowed-amount loan))
+    (interest-accumulated (get interest-accumulated loan))
+    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+  )
+    ;; Check if protocol is not paused
+    (asserts! (not (var-get protocol-paused)) (err ERR-PROTOCOL-PAUSED))
+    
+    ;; Check if oracle price is not expired
+    (asserts! (< (- timestamp (var-get last-oracle-timestamp)) ORACLE_PRICE_EXPIRY) (err ERR-ORACLE-INVALID))
+    
+    ;; Check minimum borrow
+    (asserts! (>= amount MINIMUM_BORROW) (err ERR-BELOW-MINIMUM-BORROW))
+    
+    ;; Update loan interest if active loan exists
+    (if has-active-loan
+      (update-loan-interest sender)
+      true
+    )
+    
+    ;; Get total debt (existing borrowed amount + accumulated interest + new borrow)
+    (let (
+      (updated-loan (if has-active-loan 
+                      (unwrap! (map-get? loans { borrower: sender }) (err ERR-LOAN-NOT-FOUND)) 
+                      loan))
+      (total-existing-debt (+ (get borrowed-amount updated-loan) (get interest-accumulated updated-loan)))
+      (total-new-debt (+ total-existing-debt amount))
+      (required-collateral (calculate-required-collateral total-new-debt))
+    )
+      ;; Check if user has sufficient collateral
+      (asserts! (>= user-collateral-amount required-collateral) (err ERR-INSUFFICIENT-COLLATERAL))
+      
+      ;; Mint stablecoin tokens to the borrower
+      (ft-mint? stablecoin amount sender)
+      
+      ;; Update or create loan
+      (map-set loans 
+        { borrower: sender } 
+        {
+          collateral-amount: user-collateral-amount,
+          borrowed-amount: (+ borrowed-amount amount),
+          interest-accumulated: interest-accumulated,
+          last-update-block: block-height,
+          liquidation-price: (calculate-liquidation-price user-collateral-amount total-new-debt),
+          active: true
+        }
+      )
+      
+      ;; Update user's borrow amount
+      (map-set user-borrows 
+        { user: sender } 
+        { amount: (+ (default-to u0 (get amount (map-get? user-borrows { user: sender }))) amount) })
+      
+      ;; Update total borrowed
+      (var-set total-borrowed (+ (var-get total-borrowed) amount))
+      
+      ;; Update interest rate
+      (update-interest-rate)
+      
+      (ok amount)
+    )
+  )
+)
