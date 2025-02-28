@@ -277,3 +277,75 @@
     (ok amount)
   )
 )
+
+(define-public (withdraw-collateral (amount uint))
+  (let (
+    (sender tx-sender)
+    (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: sender })))
+    (user-collateral-amount (get amount current-collateral))
+    (loan (default-to { 
+              collateral-amount: u0, 
+              borrowed-amount: u0, 
+              interest-accumulated: u0,
+              last-update-block: block-height,
+              liquidation-price: u0,
+              active: false
+            } 
+            (map-get? loans { borrower: sender })))
+    (has-active-loan (get active loan))
+  )
+    ;; Check if protocol is not paused
+    (asserts! (not (var-get protocol-paused)) (err ERR-PROTOCOL-PAUSED))
+    
+    ;; Check if user has enough collateral
+    (asserts! (<= amount user-collateral-amount) (err ERR-INSUFFICIENT-BALANCE))
+    
+    ;; If user has an active loan, ensure they maintain sufficient collateral
+    (if has-active-loan
+      (begin
+        ;; Update loan interest first
+        (update-loan-interest sender)
+        
+        ;; Get the updated loan
+        (let (
+          (updated-loan (unwrap! (map-get? loans { borrower: sender }) (err ERR-LOAN-NOT-FOUND)))
+          (borrowed-amount (get borrowed-amount updated-loan))
+          (interest-accumulated (get interest-accumulated updated-loan))
+          (total-debt (+ borrowed-amount interest-accumulated))
+          (remaining-collateral (- user-collateral-amount amount))
+          (required-collateral (calculate-required-collateral total-debt))
+        )
+          ;; Ensure remaining collateral is sufficient
+          (asserts! (>= remaining-collateral required-collateral) (err ERR-INSUFFICIENT-COLLATERAL))
+          
+          ;; Update loan collateral and liquidation price
+          (map-set loans 
+            { borrower: sender } 
+            (merge updated-loan {
+              collateral-amount: remaining-collateral,
+              liquidation-price: (calculate-liquidation-price remaining-collateral total-debt)
+            })
+          )
+        )
+      )
+      true
+    )
+    
+    ;; Update user's collateral
+    (map-set user-collateral 
+      { user: sender } 
+      { amount: (- user-collateral-amount amount) })
+    
+    ;; Update total collateral
+    (var-set total-collateral (- (var-get total-collateral) amount))
+    
+    ;; Transfer sBTC from contract to user
+    (as-contract 
+      (contract-call? sBTC-asset transfer amount tx-sender sender none))
+    
+    ;; Update interest rate
+    (update-interest-rate)
+    
+    (ok amount)
+  )
+)
