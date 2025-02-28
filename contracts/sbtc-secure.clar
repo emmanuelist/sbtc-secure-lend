@@ -427,3 +427,76 @@
     )
   )
 )
+
+(define-public (repay (amount uint))
+  (let (
+    (sender tx-sender)
+    (loan (unwrap! (map-get? loans { borrower: sender }) (err ERR-LOAN-NOT-FOUND)))
+    (active (get active loan))
+  )
+    ;; Check if loan is active
+    (asserts! active (err ERR-LOAN-NOT-FOUND))
+    
+    ;; Update loan interest first
+    (update-loan-interest sender)
+    
+    ;; Get updated loan
+    (let (
+      (updated-loan (unwrap! (map-get? loans { borrower: sender }) (err ERR-LOAN-NOT-FOUND)))
+      (borrowed-amount (get borrowed-amount updated-loan))
+      (interest-accumulated (get interest-accumulated updated-loan))
+      (total-debt (+ borrowed-amount interest-accumulated))
+    )
+      ;; Ensure repayment amount is not larger than the debt
+      (let (
+        (repay-amount (if (> amount total-debt) total-debt amount))
+        (interest-repaid (if (> repay-amount interest-accumulated) 
+                             interest-accumulated
+                             repay-amount))
+        (principal-repaid (- repay-amount interest-repaid))
+        (remaining-borrowed (- borrowed-amount principal-repaid))
+        (remaining-interest (- interest-accumulated interest-repaid))
+      )
+        ;; Burn stablecoin tokens from the borrower
+        (ft-burn? stablecoin repay-amount sender)
+        
+        ;; Update total borrowed
+        (var-set total-borrowed (- (var-get total-borrowed) principal-repaid))
+        
+        ;; Update user's borrow amount
+        (map-set user-borrows 
+          { user: sender } 
+          { amount: (- (unwrap! (get amount (map-get? user-borrows { user: sender })) (err ERR-LOAN-NOT-FOUND)) principal-repaid) })
+        
+        ;; Update loan status
+        (if (and (is-eq remaining-borrowed u0) (is-eq remaining-interest u0))
+          ;; Loan fully repaid
+          (map-set loans 
+            { borrower: sender } 
+            (merge updated-loan {
+              borrowed-amount: u0,
+              interest-accumulated: u0,
+              active: false
+            })
+          )
+          ;; Partial repayment
+          (map-set loans 
+            { borrower: sender } 
+            (merge updated-loan {
+              borrowed-amount: remaining-borrowed,
+              interest-accumulated: remaining-interest,
+              liquidation-price: (calculate-liquidation-price 
+                                   (get collateral-amount updated-loan) 
+                                   (+ remaining-borrowed remaining-interest))
+            })
+          )
+        )
+        
+        ;; Update interest rate
+        (update-interest-rate)
+        
+        (ok repay-amount)
+      )
+    )
+  )
+)
