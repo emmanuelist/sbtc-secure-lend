@@ -52,7 +52,7 @@
 (define-data-var current-interest-rate uint u0) ;; Current interest rate (scaled by 100)
 
 ;; Asset contract references
-(define-constant sBTC-asset 'ST000000000000000000002AMW42H.sbtc-token.sbtc) ;; Example sBTC token
+;; (define-constant sBTC-asset 'ST000000000000000000002AMW42H.sbtc-token.sbtc) ;; Example sBTC token
 (define-fungible-token stablecoin) ;; Internal representation of the stablecoin for borrowing
 
 ;; Implement SIP-010 trait for the stablecoin
@@ -101,7 +101,7 @@
   (begin
     (asserts! (is-eq tx-sender (var-get protocol-admin)) (err ERR-NOT-AUTHORIZED))
     (var-set last-oracle-price new-price)
-    (var-set last-oracle-timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+    (var-set last-oracle-timestamp stacks-block-height)
     (ok true)
   )
 )
@@ -138,7 +138,7 @@
   (let (
     (loan (unwrap! (map-get? loans { borrower: borrower }) (err ERR-LOAN-NOT-FOUND)))
     (current-price (var-get last-oracle-price))
-    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+    (timestamp stacks-block-height)
   )
     ;; Check if oracle price is not expired
     (asserts! (< (- timestamp (var-get last-oracle-timestamp)) ORACLE_PRICE_EXPIRY) (err ERR-PRICE-EXPIRED))
@@ -169,7 +169,7 @@
 (define-read-only (get-collateral-value (amount uint))
   (let (
     (price (var-get last-oracle-price))
-    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+    (timestamp (unwrap-panic stacks-block-height))
   )
     ;; Check if oracle price is not expired
     (asserts! (< (- timestamp (var-get last-oracle-timestamp)) ORACLE_PRICE_EXPIRY) (err ERR-PRICE-EXPIRED))
@@ -216,7 +216,7 @@
 ;; Calculate interest for a specific loan
 (define-private (calculate-interest (borrowed-amount uint) (last-update-block uint))
   (let (
-    (blocks-passed (- block-height last-update-block))
+    (blocks-passed (- stacks-block-height last-update-block))
     (interest-rate (var-get current-interest-rate))
     ;; Daily interest = (borrowed-amount * interest-rate) / (BLOCKS_PER_YEAR * 100)
     (interest-per-block (/ (* borrowed-amount interest-rate) (* BLOCKS_PER_YEAR u100)))
@@ -241,7 +241,7 @@
       { borrower: borrower } 
       (merge loan {
         interest-accumulated: new-interest,
-        last-update-block: block-height
+        last-update-block: stacks-block-height
       })
     )
   )
@@ -287,7 +287,7 @@
               collateral-amount: u0, 
               borrowed-amount: u0, 
               interest-accumulated: u0,
-              last-update-block: block-height,
+              last-update-block: stacks-block-height,
               liquidation-price: u0,
               active: false
             } 
@@ -359,7 +359,7 @@
               collateral-amount: u0, 
               borrowed-amount: u0, 
               interest-accumulated: u0,
-              last-update-block: block-height,
+              last-update-block: stacks-block-height,
               liquidation-price: u0,
               active: false
             } 
@@ -367,7 +367,7 @@
     (has-active-loan (get active loan))
     (borrowed-amount (get borrowed-amount loan))
     (interest-accumulated (get interest-accumulated loan))
-    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+    (timestamp (unwrap-panic stacks-block-height))
   )
     ;; Check if protocol is not paused
     (asserts! (not (var-get protocol-paused)) (err ERR-PROTOCOL-PAUSED))
@@ -406,7 +406,7 @@
           collateral-amount: user-collateral-amount,
           borrowed-amount: (+ borrowed-amount amount),
           interest-accumulated: interest-accumulated,
-          last-update-block: block-height,
+          last-update-block: stacks-block-height,
           liquidation-price: (calculate-liquidation-price user-collateral-amount total-new-debt),
           active: true
         }
@@ -511,7 +511,7 @@
     (interest-accumulated (get interest-accumulated loan))
     (total-debt (+ borrowed-amount interest-accumulated))
     (price (var-get last-oracle-price))
-    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+    (timestamp (unwrap-panic stacks-block-height))
   )
     ;; Check if protocol is not paused
     (asserts! (not (var-get protocol-paused)) (err ERR-PROTOCOL-PAUSED))
