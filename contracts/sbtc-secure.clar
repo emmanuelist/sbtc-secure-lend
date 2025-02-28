@@ -124,3 +124,91 @@
     (/ (* (* collateral-amount price) u100) COLLATERAL-RATIO)
   )
 )
+
+(define-read-only (calculate-liquidation-price (collateral-amount uint) (borrowed-amount uint))
+  (let (
+    ;; Formula: (borrowed-amount * 100) / (collateral-amount * LIQUIDATION_THRESHOLD / 100)
+    (liquidation-price (/ (* borrowed-amount u10000) (* collateral-amount LIQUIDATION-THRESHOLD)))
+  )
+    liquidation-price
+  )
+)
+
+(define-read-only (is-loan-liquidatable (borrower principal))
+  (let (
+    (loan (unwrap! (map-get? loans { borrower: borrower }) (err ERR-LOAN-NOT-FOUND)))
+    (current-price (var-get last-oracle-price))
+    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+  )
+    ;; Check if oracle price is not expired
+    (asserts! (< (- timestamp (var-get last-oracle-timestamp)) ORACLE_PRICE_EXPIRY) (err ERR-PRICE-EXPIRED))
+    
+    ;; Check if loan is active
+    (asserts! (get active loan) (err ERR-LOAN-NOT-FOUND))
+    
+    ;; Check if current price is below liquidation price
+    (ok (< current-price (get liquidation-price loan)))
+  )
+)
+
+(define-read-only (get-current-interest-rate)
+  (let (
+    (utilization (var-get utilization-rate))
+    (base-rate INTEREST_RATE_BASE)
+    (slope INTEREST_RATE_SLOPE)
+  )
+    ;; Formula: base-rate + (utilization * slope / 100)
+    (+ base-rate (/ (* utilization slope) u100))
+  )
+)
+
+(define-read-only (get-loan-details (borrower principal))
+  (map-get? loans { borrower: borrower })
+)
+
+(define-read-only (get-collateral-value (amount uint))
+  (let (
+    (price (var-get last-oracle-price))
+    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+  )
+    ;; Check if oracle price is not expired
+    (asserts! (< (- timestamp (var-get last-oracle-timestamp)) ORACLE_PRICE_EXPIRY) (err ERR-PRICE-EXPIRED))
+    
+    ;; Calculate the value: amount * price
+    (* amount price)
+  )
+)
+
+(define-read-only (get-health-factor (borrower principal))
+  (let (
+    (loan (unwrap! (map-get? loans { borrower: borrower }) (err ERR-LOAN-NOT-FOUND)))
+    (collateral-amount (get collateral-amount loan))
+    (borrowed-amount (get borrowed-amount loan))
+    (interest-accumulated (get interest-accumulated loan))
+    (total-debt (+ borrowed-amount interest-accumulated))
+    (collateral-value (get-collateral-value collateral-amount))
+  )
+    ;; Health factor = (collateral-value * 100) / (total-debt * COLLATERAL_RATIO)
+    (/ (* collateral-value u100) (* total-debt COLLATERAL-RATIO))
+  )
+)
+
+;; Update the interest rate based on the current utilization
+(define-private (update-interest-rate)
+  (let (
+    (total-collateral-value (get-collateral-value (var-get total-collateral)))
+    (total-borrowed-amount (var-get total-borrowed))
+  )
+    ;; Update utilization rate: (total-borrowed * 100) / total-collateral-value
+    (if (> total-collateral-value u0)
+      (begin
+        (var-set utilization-rate (/ (* total-borrowed-amount u100) total-collateral-value))
+        (var-set current-interest-rate (get-current-interest-rate))
+      )
+      (begin
+        (var-set utilization-rate u0)
+        (var-set current-interest-rate INTEREST_RATE_BASE)
+      )
+    )
+  )
+)
