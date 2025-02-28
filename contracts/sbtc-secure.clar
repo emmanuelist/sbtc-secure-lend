@@ -212,3 +212,68 @@
     )
   )
 )
+
+;; Calculate interest for a specific loan
+(define-private (calculate-interest (borrowed-amount uint) (last-update-block uint))
+  (let (
+    (blocks-passed (- block-height last-update-block))
+    (interest-rate (var-get current-interest-rate))
+    ;; Daily interest = (borrowed-amount * interest-rate) / (BLOCKS_PER_YEAR * 100)
+    (interest-per-block (/ (* borrowed-amount interest-rate) (* BLOCKS_PER_YEAR u100)))
+  )
+    (* interest-per-block blocks-passed)
+  )
+)
+
+;; Update loan's accumulated interest
+(define-private (update-loan-interest (borrower principal))
+  (let (
+    (loan (unwrap! (map-get? loans { borrower: borrower }) (err ERR-LOAN-NOT-FOUND)))
+    (active (get active loan))
+    (borrowed-amount (get borrowed-amount loan))
+    (last-update-block (get last-update-block loan))
+    (current-interest (get interest-accumulated loan))
+    (new-interest (if active 
+                     (+ current-interest (calculate-interest borrowed-amount last-update-block))
+                     current-interest))
+  )
+    (map-set loans 
+      { borrower: borrower } 
+      (merge loan {
+        interest-accumulated: new-interest,
+        last-update-block: block-height
+      })
+    )
+  )
+)
+
+;; Core protocol functions
+(define-public (deposit-collateral (amount uint))
+  (let (
+    (sender tx-sender)
+    (current-collateral (default-to { amount: u0 } (map-get? user-collateral { user: sender })))
+  )
+    ;; Check if protocol is not paused
+    (asserts! (not (var-get protocol-paused)) (err ERR-PROTOCOL-PAUSED))
+    
+    ;; Check minimum deposit
+    (asserts! (>= amount MINIMUM-COLLATERAL) (err ERR-MINIMUM-DEPOSIT))
+    
+    ;; Transfer sBTC from user to the contract
+    (asserts! (is-ok (contract-call? sBTC-asset transfer amount sender (as-contract tx-sender) none)) 
+              (err ERR-INSUFFICIENT-BALANCE))
+    
+    ;; Update user's collateral
+    (map-set user-collateral 
+      { user: sender } 
+      { amount: (+ (get amount current-collateral) amount) })
+    
+    ;; Update total collateral
+    (var-set total-collateral (+ (var-get total-collateral) amount))
+    
+    ;; Update interest rate
+    (update-interest-rate)
+    
+    (ok amount)
+  )
+)
