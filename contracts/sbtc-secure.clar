@@ -500,3 +500,82 @@
     )
   )
 )
+
+(define-public (liquidate (borrower principal))
+  (let (
+    (liquidator tx-sender)
+    (liquidatable (unwrap! (is-loan-liquidatable borrower) (err ERR-LOAN-NOT-LIQUIDATABLE)))
+    (loan (unwrap! (map-get? loans { borrower: borrower }) (err ERR-LOAN-NOT-FOUND)))
+    (collateral-amount (get collateral-amount loan))
+    (borrowed-amount (get borrowed-amount loan))
+    (interest-accumulated (get interest-accumulated loan))
+    (total-debt (+ borrowed-amount interest-accumulated))
+    (price (var-get last-oracle-price))
+    (timestamp (unwrap-panic (get-block-info? time (- block-height u1))))
+  )
+    ;; Check if protocol is not paused
+    (asserts! (not (var-get protocol-paused)) (err ERR-PROTOCOL-PAUSED))
+    
+    ;; Check if oracle price is not expired
+    (asserts! (< (- timestamp (var-get last-oracle-timestamp)) ORACLE_PRICE_EXPIRY) (err ERR-ORACLE-INVALID))
+    
+    ;; Check if loan is actually liquidatable
+    (asserts! liquidatable (err ERR-LOAN-NOT-LIQUIDATABLE))
+    
+    ;; Calculate collateral to liquidate (debt + liquidation penalty)
+    (let (
+      (liquidation-bonus (/ (* total-debt LIQUIDATION-PENALTY) u100))
+      (debt-with-bonus (+ total-debt liquidation-bonus))
+      (collateral-to-liquidate (/ (* debt-with-bonus u100) (* price u100)))
+    )
+      ;; Ensure liquidator has enough stablecoins to repay the debt
+      (asserts! (>= (ft-get-balance stablecoin liquidator) total-debt) (err ERR-INSUFFICIENT-BALANCE))
+      
+      ;; Burn stablecoin tokens from the liquidator to repay the debt
+      (ft-burn? stablecoin total-debt liquidator)
+      
+      ;; Transfer sBTC collateral to liquidator
+      (as-contract 
+        (contract-call? sBTC-asset transfer collateral-to-liquidate tx-sender liquidator none))
+      
+      ;; Update borrower's collateral
+      (let (
+        (remaining-collateral (- collateral-amount collateral-to-liquidate))
+        (borrower-collateral (unwrap! (map-get? user-collateral { user: borrower }) (err ERR-LOAN-NOT-FOUND)))
+      )
+        (map-set user-collateral 
+          { user: borrower } 
+          { amount: (- (get amount borrower-collateral) collateral-to-liquidate) })
+        
+        ;; Mark loan as inactive
+        (map-set loans 
+          { borrower: borrower } 
+          (merge loan {
+            collateral-amount: remaining-collateral,
+            borrowed-amount: u0,
+            interest-accumulated: u0,
+            active: false
+          })
+        )
+        
+        ;; Update user's borrow amount
+        (map-set user-borrows { user: borrower } { amount: u0 })
+        
+        ;; Update total borrowed and collateral
+        (var-set total-borrowed (- (var-get total-borrowed) borrowed-amount))
+        (var-set total-collateral (- (var-get total-collateral) collateral-to-liquidate))
+        
+        ;; Update interest rate
+        (update-interest-rate)
+        
+        (ok collateral-to-liquidate)
+      )
+    )
+  )
+)
+
+;; Initialize contract
+(begin
+  ;; Initialize interest rate
+  (var-set current-interest-rate INTEREST_RATE_BASE)
+)
